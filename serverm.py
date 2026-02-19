@@ -6,7 +6,9 @@ import random
 
 # Diccionario para rastrear clientes: {nombre: socket}
 clientes = {}
-# Bloqueo para acceso seguro al diccionario desde múltiples hilos
+# Conjunto para rastrear sesiones activas: {(usuario1, usuario2)}
+sesiones_activas = set()
+# Bloqueo para acceso seguro a las estructuras de datos desde múltiples hilos
 lock = threading.Lock()
 
 def obtener_ip_local():
@@ -40,16 +42,55 @@ def handle_client(conn, addr, nombre):
             if mensaje_raw == "GET_USERS":
                 enviar_lista_usuarios(conn)
             
+            elif mensaje_raw.startswith("REQ_CHAT:"):
+                destino = mensaje_raw.split(":", 1)[1]
+                with lock:
+                    if destino in clientes:
+                        clientes[destino].sendall(f"REQ_CHAT_FROM:{nombre}".encode('utf-8'))
+                    else:
+                        conn.sendall(f"ERROR:Usuario {destino} no encontrado".encode('utf-8'))
+            
+            elif mensaje_raw.startswith("ACCEPT_CHAT:"):
+                remitente_req = mensaje_raw.split(":", 1)[1]
+                with lock:
+                    if remitente_req in clientes:
+                        sesiones_activas.add((nombre, remitente_req))
+                        sesiones_activas.add((remitente_req, nombre))
+                        clientes[remitente_req].sendall(f"CHAT_ACCEPTED:{nombre}".encode('utf-8'))
+                        conn.sendall(f"CHAT_ACCEPTED:{remitente_req}".encode('utf-8'))
+                    else:
+                        conn.sendall(f"ERROR:Usuario {remitente_req} ya no está conectado".encode('utf-8'))
+            
+            elif mensaje_raw.startswith("DENY_CHAT:"):
+                remitente_req = mensaje_raw.split(":", 1)[1]
+                with lock:
+                    if remitente_req in clientes:
+                        clientes[remitente_req].sendall(f"CHAT_DENIED:{nombre}".encode('utf-8'))
+            
+            elif mensaje_raw.startswith("STOP_CHAT:"):
+                destino = mensaje_raw.split(":", 1)[1]
+                print(f"[CHAT FINALIZADO] {nombre} ha terminado el chat con {destino}")
+                with lock:
+                    sesiones_activas.discard((nombre, destino))
+                    sesiones_activas.discard((destino, nombre))
+                    if destino in clientes:
+                        clientes[destino].sendall(f"CHAT_STOPPED:{nombre}".encode('utf-8'))
+            
             elif mensaje_raw.startswith("CHAT:"):
                 # Formato: CHAT:<destino>:<mensaje>
                 try:
                     _, destino, msg = mensaje_raw.split(":", 2)
                     with lock:
-                        if destino in clientes:
-                            target_sock = clientes[destino]
-                            target_sock.sendall(f"FROM:{nombre}:{msg}".encode('utf-8'))
+                        if (nombre, destino) in sesiones_activas:
+                            if destino in clientes:
+                                target_sock = clientes[destino]
+                                target_sock.sendall(f"FROM:{nombre}:{msg}".encode('utf-8'))
+                            else:
+                                conn.sendall(f"ERROR:Usuario {destino} desconectado".encode('utf-8'))
+                                sesiones_activas.discard((nombre, destino))
+                                sesiones_activas.discard((destino, nombre))
                         else:
-                            conn.sendall(f"ERROR:Usuario {destino} no encontrado".encode('utf-8'))
+                            conn.sendall(f"ERROR:No tienes un chat activo con {destino}. Debes pedir permiso primero.".encode('utf-8'))
                 except ValueError:
                     conn.sendall("ERROR:Formato de mensaje inválido".encode('utf-8'))
             
@@ -59,6 +100,10 @@ def handle_client(conn, addr, nombre):
         with lock:
             if nombre in clientes:
                 del clientes[nombre]
+            # Limpiar sesiones del usuario desconectado
+            sesiones_ha_eliminar = [s for s in sesiones_activas if nombre in s]
+            for s in sesiones_ha_eliminar:
+                sesiones_activas.discard(s)
         print(f"[DESCONEXIÓN] {nombre} desconectado.")
         conn.close()
 
@@ -72,7 +117,7 @@ def main():
 
     host_real, port_real = sock.getsockname()
     print("="*45)
-    print(f"  Servidor de Chat Centralizado listo.")
+    print(f"  Servidor de Chat con Confirmación listo.")
     print(f"  IP   : {host_real}")
     print(f"  Puerto: {port_real}")
     print("="*45)
