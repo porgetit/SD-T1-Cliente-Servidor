@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Servidor en modo ECHO
 import socket
 
 # Detectar automáticamente la IP local de esta máquina
@@ -44,7 +45,7 @@ while True:
     print(f"Mensaje recibido del cliente: {data.decode('utf-8')}")
 
     # Enviar respuesta al cliente
-    response = input("Ingrese la respuesta para el cliente: ")
+    response = data.decode('utf-8')
     conn.sendall(response.encode('utf-8'))
 
 # Cerrar la conexión
